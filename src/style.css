@@ -1,0 +1,75 @@
+:root {
+  font-family: ui-rounded, "SF Pro Rounded", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #5e3e4c;
+  background: #fff1f6;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  position: fixed;
+  inset: 0;
+  min-height: 100dvh;
+  background: #fff1f6;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+#app {
+  position: absolute;
+  inset: 0;
+  padding-top: env(safe-area-inset-top);
+  padding-right: env(safe-area-inset-right);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+}
+
+#app canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  touch-action: none;
+}
+
+#loading {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 18px);
+  left: 50%;
+  z-index: 10;
+  transform: translateX(-50%);
+  padding: 10px 16px;
+  border: 2px solid #f1b8cc;
+  border-radius: 999px;
+  color: #7d4c60;
+  background: rgb(255 255 255 / 82%);
+  box-shadow: 0 5px 0 rgb(169 95 121 / 16%);
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: opacity 180ms ease;
+  pointer-events: none;
+}
+
+#loading.is-hidden {
+  opacity: 0;
+}
