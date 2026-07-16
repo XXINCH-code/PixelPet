@@ -1,5 +1,11 @@
-const CACHE_NAME = 'pixel-pet-v1';
-const APP_SHELL = ['./', './index.html', './manifest.webmanifest', './icons/pet-icon.svg'];
+const CACHE_NAME = 'pixel-pet-v5';
+const APP_SHELL = [
+  './',
+  './index.html',
+  './manifest.webmanifest',
+  './icons/pet-icon-192.png',
+  './icons/pet-icon-512.png',
+];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
