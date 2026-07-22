@@ -28,6 +28,7 @@ interface ActionConfig {
 
 const CLICK_WINDOW_MS = 420;
 const DUPLICATE_TAP_GUARD_MS = 80;
+const LONG_PRESS_MS = 600;
 
 const ACTIONS: Record<PetAction, ActionConfig> = {
   idle: { folder: 'idles', frames: 10, frameRate: 2.5, repeat: -1 },
@@ -62,6 +63,21 @@ const RANDOM_ACTIONS: Array<{
   { action: 'wave', status: '嗨～看到你啦！' },
 ];
 
+const ACTION_WHEEL_ITEMS: Array<{
+  action: Exclude<PetAction, 'idle' | 'walk-left' | 'walk-right' | 'thinking' | 'sorry' | 'sleep' | 'love' | 'poke-reaction'>;
+  label: string;
+  status: string;
+}> = [
+  { action: 'act-cute', label: '卖萌', status: '可爱一下～' },
+  { action: 'wave', label: '招手', status: '嗨～看到你啦！' },
+  { action: 'dance', label: '跳舞', status: '跟着节奏跳起来～' },
+  { action: 'cheer', label: '加油', status: '一起加油！' },
+  { action: 'give-flowers', label: '送花', status: '送你一束花！' },
+  { action: 'anniversary', label: '纪念', status: '这是给你的纪念礼物！' },
+  { action: 'handsome', label: '耍帅', status: '今天也很帅气！' },
+  { action: 'walk-dog', label: '遛狗', status: '一起遛狗去～' },
+];
+
 function frameKey(action: PetAction, index: number): string {
   return `pet-${action}-${index.toString().padStart(3, '0')}`;
 }
@@ -86,6 +102,12 @@ export class PetScene extends Phaser.Scene {
   private activeTapPointerId: number | null = null;
   private pointerIsDown = false;
   private lastAcceptedTapAt = Number.NEGATIVE_INFINITY;
+  private longPressTriggered = false;
+  private longPressTimer?: Phaser.Time.TimerEvent;
+  private groundPointerId: number | null = null;
+  private groundPointerDownAt = 0;
+  private groundPointerDownPosition = new Phaser.Math.Vector2();
+  private actionWheel?: Phaser.GameObjects.Container;
   private interactionLocked = false;
   private clickCount = 0;
   private clickTimer?: Phaser.Time.TimerEvent;
@@ -132,7 +154,7 @@ export class PetScene extends Phaser.Scene {
       .setDepth(20);
 
     this.hintText = this.add
-      .text(this.scale.width / 2, this.scale.height - 34, '单击睡觉 · 双击道歉 · 三击示爱', {
+      .text(this.scale.width / 2, this.scale.height - 34, '点击地面移动 · 长按打开动作轮盘', {
         color: '#8d6071',
         fontFamily: 'ui-rounded, "PingFang SC", sans-serif',
         fontSize: '14px',
@@ -149,16 +171,22 @@ export class PetScene extends Phaser.Scene {
 
     this.pet.play('pet-idle');
     this.input.dragDistanceThreshold = 10;
-    this.input.dragTimeThreshold = 500;
+    this.input.dragTimeThreshold = 10_000;
     this.input.setDraggable(this.pet);
     this.configureInput();
+    this.input.on(Phaser.Input.Events.POINTER_DOWN, this.handleScenePointerDown, this);
+    this.input.on(Phaser.Input.Events.POINTER_UP, this.handleScenePointerUp, this);
     this.scheduleIdle(this.time.now + 2200);
     this.scheduleNextThinking(this.time.now);
 
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
+      this.input.off(Phaser.Input.Events.POINTER_DOWN, this.handleScenePointerDown, this);
+      this.input.off(Phaser.Input.Events.POINTER_UP, this.handleScenePointerUp, this);
       this.clickTimer?.remove(false);
+      this.longPressTimer?.remove(false);
+      this.actionWheel?.destroy(true);
     });
 
     const loading = document.querySelector<HTMLDivElement>('#loading');
@@ -228,12 +256,28 @@ export class PetScene extends Phaser.Scene {
     this.pet.on(Phaser.Input.Events.POINTER_DOWN, (pointer: Phaser.Input.Pointer) => {
       this.activeTapPointerId = pointer.id;
       this.pointerIsDown = true;
+      this.longPressTriggered = false;
       this.pointerDownAt = pointer.downTime;
       this.pointerDownPosition.set(pointer.x, pointer.y);
       this.hasDragged = false;
+
+      this.cancelLongPress();
+      if (!this.interactionLocked && !this.actionWheel) {
+        this.longPressTimer = this.time.delayedCall(LONG_PRESS_MS, () => {
+          if (
+            this.pointerIsDown &&
+            this.activeTapPointerId === pointer.id &&
+            !this.hasDragged
+          ) {
+            this.longPressTriggered = true;
+            this.openActionWheel();
+          }
+        });
+      }
     });
 
     this.pet.on(Phaser.Input.Events.DRAG_START, () => {
+      this.cancelLongPress();
       this.hasDragged = true;
       this.pointerIsDown = false;
       this.activeTapPointerId = null;
@@ -275,6 +319,7 @@ export class PetScene extends Phaser.Scene {
         return;
       }
 
+      this.cancelLongPress();
       this.pointerIsDown = false;
       this.activeTapPointerId = null;
       const moved = Phaser.Math.Distance.Between(
@@ -285,10 +330,147 @@ export class PetScene extends Phaser.Scene {
       );
       const heldFor = pointer.upTime - this.pointerDownAt;
 
+      if (this.longPressTriggered) {
+        this.longPressTriggered = false;
+        return;
+      }
+
       if (!this.hasDragged && moved < 12 && heldFor < 450) {
         this.registerClick(pointer.upTime);
       }
     });
+  }
+
+  private handleScenePointerDown(
+    pointer: Phaser.Input.Pointer,
+    currentlyOver: Phaser.GameObjects.GameObject[],
+  ): void {
+    this.groundPointerId = null;
+
+    if (this.actionWheel) {
+      if (currentlyOver.length === 0) {
+        this.closeActionWheel(true);
+      }
+      return;
+    }
+
+    if (currentlyOver.length > 0 || pointer.y < this.getFloorY() - 24) {
+      return;
+    }
+
+    this.groundPointerId = pointer.id;
+    this.groundPointerDownAt = pointer.downTime;
+    this.groundPointerDownPosition.set(pointer.x, pointer.y);
+  }
+
+  private handleScenePointerUp(pointer: Phaser.Input.Pointer): void {
+    if (pointer.id !== this.groundPointerId) {
+      return;
+    }
+
+    this.groundPointerId = null;
+    const moved = Phaser.Math.Distance.Between(
+      this.groundPointerDownPosition.x,
+      this.groundPointerDownPosition.y,
+      pointer.x,
+      pointer.y,
+    );
+    const heldFor = pointer.upTime - this.groundPointerDownAt;
+
+    if (moved < 12 && heldFor < 450 && !this.interactionLocked) {
+      this.startWalking(pointer.x, false);
+    }
+  }
+
+  private cancelLongPress(): void {
+    this.longPressTimer?.remove(false);
+    this.longPressTimer = undefined;
+  }
+
+  private openActionWheel(): void {
+    if (this.actionWheel || this.interactionLocked) {
+      return;
+    }
+
+    this.clearPendingClicks();
+    this.cancelOneShot();
+    this.state = 'reaction';
+    this.interactionLocked = true;
+    this.input.setDraggable(this.pet, false);
+    this.pet.stop();
+    this.pet.setTexture(frameKey('idle', 0));
+
+    const radius = 92;
+    const edge = radius + 31;
+    const centerX = Phaser.Math.Clamp(this.pet.x, edge, Math.max(edge, this.scale.width - edge));
+    const desiredCenterY = this.pet.y - this.pet.displayHeight * 0.46;
+    const centerY = Phaser.Math.Clamp(desiredCenterY, 180, Math.max(180, this.scale.height - edge));
+    const wheel = this.add.container(centerX, centerY).setDepth(50);
+
+    const backdrop = this.add
+      .circle(0, 0, radius + 29, 0xfff8fb, 0.96)
+      .setStrokeStyle(3, 0xf1b8cc, 1);
+    wheel.add(backdrop);
+
+    ACTION_WHEEL_ITEMS.forEach((item, index) => {
+      const angle = Phaser.Math.DegToRad(-90 + index * (360 / ACTION_WHEEL_ITEMS.length));
+      const x = Math.cos(angle) * radius;
+      const y = Math.sin(angle) * radius;
+      const buttonCircle = this.add.circle(0, 0, 27, 0xf7c8d8, 1).setStrokeStyle(2, 0xe98eac, 1);
+      const buttonLabel = this.add
+        .text(0, 0, item.label, {
+          color: '#74485a',
+          fontFamily: 'ui-rounded, "PingFang SC", sans-serif',
+          fontSize: '13px',
+          fontStyle: 'bold',
+          align: 'center',
+        })
+        .setOrigin(0.5);
+      const button = this.add
+        .container(x, y, [buttonCircle, buttonLabel])
+        .setSize(56, 56)
+        .setInteractive({ useHandCursor: true });
+      button.on(Phaser.Input.Events.POINTER_UP, () => this.selectWheelAction(item));
+      wheel.add(button);
+    });
+
+    const centerLabel = this.add
+      .text(0, 0, '选择\n动作', {
+        color: '#9c5a73',
+        fontFamily: 'ui-rounded, "PingFang SC", sans-serif',
+        fontSize: '14px',
+        fontStyle: 'bold',
+        align: 'center',
+      })
+      .setOrigin(0.5);
+    wheel.add(centerLabel);
+
+    this.actionWheel = wheel;
+    this.statusText.setText('选择一个动作吧～');
+  }
+
+  private selectWheelAction(item: (typeof ACTION_WHEEL_ITEMS)[number]): void {
+    this.closeActionWheel(false);
+    if (item.action === 'walk-dog') {
+      this.startWalking(undefined, true);
+    } else {
+      this.playOneShot(item.action, item.status);
+    }
+  }
+
+  private closeActionWheel(resumeIdle: boolean): void {
+    if (!this.actionWheel) {
+      return;
+    }
+
+    this.actionWheel.destroy(true);
+    this.actionWheel = undefined;
+    this.input.setDraggable(this.pet, true);
+    this.interactionLocked = false;
+    if (resumeIdle) {
+      this.statusText.setText('想做什么都可以～');
+      this.scheduleIdle(this.time.now + 1400);
+    }
   }
 
   private registerClick(tapAt: number): void {
@@ -388,19 +570,33 @@ export class PetScene extends Phaser.Scene {
     });
   }
 
-  private startWalking(): void {
-    const margin = this.pet.displayWidth * 0.48;
+  private startWalking(requestedTargetX?: number, forceDog = false): void {
+    if (this.interactionLocked || this.actionWheel) {
+      return;
+    }
+
+    const hasRequestedTarget = requestedTargetX !== undefined;
+    const useDog = forceDog || (!hasRequestedTarget && Math.random() < 0.25);
+    const margin = this.pet.displayWidth * (useDog ? 0.43 : 0.34);
     const minX = margin;
     const maxX = Math.max(minX + 1, this.scale.width - margin);
-    let targetX = Phaser.Math.Between(Math.ceil(minX), Math.floor(maxX));
+    let targetX = hasRequestedTarget
+      ? Phaser.Math.Clamp(requestedTargetX, minX, maxX)
+      : Phaser.Math.Between(Math.ceil(minX), Math.floor(maxX));
 
-    if (Math.abs(targetX - this.pet.x) < 80) {
+    if (!hasRequestedTarget && Math.abs(targetX - this.pet.x) < 80) {
       targetX = this.pet.x < this.scale.width / 2 ? maxX : minX;
+    }
+
+    if (hasRequestedTarget && Math.abs(targetX - this.pet.x) < 6) {
+      this.statusText.setText('我已经在这里啦～');
+      this.scheduleIdle(this.time.now + 1200);
+      return;
     }
 
     this.walkTargetX = targetX;
     this.walkDirection = targetX >= this.pet.x ? 1 : -1;
-    if (Math.random() < 0.25) {
+    if (useDog) {
       this.pet.setFlipX(this.walkDirection < 0);
       this.pet.play('pet-walk-dog', true);
       this.statusText.setText('一起遛狗去～');
@@ -427,6 +623,9 @@ export class PetScene extends Phaser.Scene {
 
   private handleResize(gameSize: Phaser.Structs.Size): void {
     const { width, height } = gameSize;
+    if (this.actionWheel) {
+      this.closeActionWheel(true);
+    }
     this.drawRoom(width, height);
     this.titleText.setPosition(width / 2, 30);
     this.statusText.setPosition(width / 2, 68);
